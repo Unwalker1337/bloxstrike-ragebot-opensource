@@ -1,0 +1,1473 @@
+-- РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ Linoria Lib
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+-- РЎРµСЂРІРёСЃС‹
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local HttpService = game:GetService("HttpService")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+local LocalPlayer = Players.LocalPlayer
+
+local GameState = require(ReplicatedStorage.Database.Components.GameState)
+
+-- === РЎРћРҐР РђРќР•РќРР• РћР РР“РРќРђР›Р¬РќРћР“Рћ РћРЎР’Р•Р©Р•РќРРЇ ===
+local OrigLighting = {
+    TimeOfDay = Lighting.TimeOfDay,
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    Brightness = Lighting.Brightness,
+    GlobalShadows = Lighting.GlobalShadows,
+    FogEnd = Lighting.FogEnd
+}
+
+-- === Р‘РђР—Рђ Р—Р’РЈРљРћР’ ===
+local SoundIDs = {
+    ['None'] = nil,
+    ['Metal'] = 'rbxassetid://2868331684',
+    ['TF2 Critical'] = 'rbxassetid://6405267300',
+    ['TF2'] = 'rbxassetid://118731928809041',
+    ['Rust'] = 'rbxassetid://121566025787365'
+}
+
+local function playSound(soundName, volume, pitch)
+    local soundId = SoundIDs[soundName]
+    if not soundId then return end
+    
+    local sound = Instance.new("Sound")
+    sound.SoundId = soundId
+    sound.Volume = volume or 0.5
+    sound.PlaybackSpeed = pitch or 1
+    sound.Parent = SoundService
+    sound:Play()
+    
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+-- === РџР•Р Р•РҐР’РђРў РџР•Р Р•Р—РђР РЇР”РљР (NO RELOAD) ===
+local WeaponModule = require(ReplicatedStorage.Components.Weapon)
+local RemotesModule = require(ReplicatedStorage.Database.Security.Remotes)
+local OriginalReload = WeaponModule.reload
+
+local function hookedReload(self, ...)
+    if Toggles.NoReload and Toggles.NoReload.Value then
+        if self.IsDestroyed or self.IsReloading or self.IsShooting then return end
+        if self.Properties.Rounds == self.Rounds then return end
+
+        local needed = self.Properties.Rounds - self.Rounds
+        local toAdd = math.min(needed, self.Capacity)
+
+        self.Rounds = self.Rounds + toAdd
+        self.Capacity = self.Capacity - toAdd
+        self.IsReloading = false
+        self.IsInspecting = false
+        self.IsShooting = false
+        self.CurrentReloadIdentity = nil
+    else
+        return OriginalReload(self, ...)
+    end
+end
+
+if newcclosure then
+    WeaponModule.reload = newcclosure(hookedReload)
+else
+    WeaponModule.reload = hookedReload
+end
+
+-- === РџР•Р Р•РҐР’РђРў ANTI-AIM ===
+local spinAngle = 0
+local randomYaw = 0
+local lastRandomUpdate = 0
+
+if RemotesModule.Character and RemotesModule.Character.UpdateLookAngle then
+    local OriginalSendLook = RemotesModule.Character.UpdateLookAngle.Send
+    local function hookedSendLook(...)
+        local args = select(1, ...)
+        if Toggles.AntiAimEnabled and Toggles.AntiAimEnabled.Value and typeof(args) == "table" and args.HorizontalAngle then
+            local yaw = args.HorizontalAngle
+            local yawMode = Options.YawMode.Value
+            local pitchMode = Options.PitchMode.Value
+            
+            if yawMode == "Backward (180)" then
+                yaw = yaw + math.pi
+            elseif yawMode == "Left (90)" then
+                yaw = yaw + math.pi / 2
+            elseif yawMode == "Right (-90)" then
+                yaw = yaw - math.pi / 2
+            elseif yawMode == "Spin" then
+                spinAngle = (spinAngle + (Options.SpinSpeed.Value * 0.01)) % (2 * math.pi)
+                yaw = yaw + spinAngle
+            elseif yawMode == "Random" then
+                if tick() - lastRandomUpdate > Options.RandomInterval.Value then
+                    randomYaw = (math.random() - 0.5) * 2 * math.pi
+                    lastRandomUpdate = tick()
+                end
+                yaw = randomYaw
+            end
+            
+            -- РќРѕСЂРјР°Р»РёР·СѓРµРј СѓРіРѕР» РІ РґРёР°РїР°Р·РѕРЅ [-pi, pi]
+            yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
+            args.HorizontalAngle = yaw
+            
+            if pitchMode == "Down (-1)" then
+                args.VerticalLook = -1
+            elseif pitchMode == "Up (1)" then
+                args.VerticalLook = 1
+            elseif pitchMode == "Zero (0)" then
+                args.VerticalLook = 0
+            elseif pitchMode == "Random" then
+                args.VerticalLook = (math.random() - 0.5) * 2
+            end
+        end
+        return OriginalSendLook(...)
+    end
+    RemotesModule.Character.UpdateLookAngle.Send = (newcclosure and newcclosure(hookedSendLook)) or hookedSendLook
+end
+
+if RemotesModule.Spectate and RemotesModule.Spectate.UpdateCameraCFrame then
+    local OriginalSendCam = RemotesModule.Spectate.UpdateCameraCFrame.Send
+    local function hookedSendCam(...)
+        local args = select(1, ...)
+        if Toggles.AntiSpectator and Toggles.AntiSpectator.Value and typeof(args) == "CFrame" then
+            local rotAmount = Options.SpectatorRotation.Value
+            local posAmount = Options.SpectatorPosition.Value
+            
+            local rx = (math.random() - 0.5) * 2 * rotAmount
+            local ry = (math.random() - 0.5) * 2 * rotAmount
+            local rz = (math.random() - 0.5) * 2 * rotAmount
+            
+            local px = (math.random() - 0.5) * 2 * posAmount
+            local py = (math.random() - 0.5) * 2 * posAmount
+            local pz = (math.random() - 0.5) * 2 * posAmount
+            
+            args = args * CFrame.new(px, py, pz) * CFrame.Angles(rx, ry, rz)
+        end
+        return OriginalSendCam(...)
+    end
+    RemotesModule.Spectate.UpdateCameraCFrame.Send = (newcclosure and newcclosure(hookedSendCam)) or hookedSendCam
+end
+
+-- РћРєРЅРѕ UI
+local Window = Library:CreateWindow({
+    Title = 'rage https://discord.gg/nxrscHSsT pls join',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+local Tabs = {
+    Aimbot = Window:AddTab('Aimbot'),
+    Visuals = Window:AddTab('Visuals'),
+    ['Anti-Aim'] = Window:AddTab('Anti-Aim'),
+    Misc = Window:AddTab('Misc'),
+    ['UI Settings'] = Window:AddTab('UI Settings'),
+}
+
+-- Р‘Р°Р·Р° РґР°РЅРЅС‹С… РѕСЂСѓР¶РёСЏ
+local WeaponDB = {
+    ["Glock-18"] = { FireRate = 0.15, Rounds = 20, Pen = 1.5, Wbm = 0.5, Damage = { Head = 118, Torso = 30, Arms = 23, Legs = 20 } },
+    ["USP-S"] = { FireRate = 0.17, Rounds = 12, Pen = 1.5, Wbm = 0.55, Damage = { Head = 140, Torso = 35, Arms = 27, Legs = 22 } },
+    ["P250"] = { FireRate = 0.15, Rounds = 13, Pen = 1.5, Wbm = 0.5, Damage = { Head = 151, Torso = 38, Arms = 29, Legs = 24 } },
+    ["Dual Berettas"] = { FireRate = 0.12, Rounds = 30, Pen = 1.5, Wbm = 0.5, Damage = { Head = 152, Torso = 38, Arms = 29, Legs = 24 } },
+    ["Five-SeveN"] = { FireRate = 0.15, Rounds = 20, Pen = 1.5, Wbm = 0.5, Damage = { Head = 120, Torso = 30, Arms = 23, Legs = 20 } },
+    ["Tec-9"] = { FireRate = 0.09, Rounds = 18, Pen = 1.5, Wbm = 0.5, Damage = { Head = 119, Torso = 30, Arms = 23, Legs = 19 } },
+    ["Desert Eagle"] = { FireRate = 0.45, Rounds = 7, Pen = 3.5, Wbm = 0.85, Damage = { Head = 250, Torso = 63, Arms = 48, Legs = 40 } },
+    ["R8 Revolver"] = { FireRate = 0.625, Rounds = 8, Pen = 3.5, Wbm = 0.85, Damage = { Head = 256, Torso = 64, Arms = 49, Legs = 41 } },
+    ["MAC-10"] = { FireRate = 0.075, Rounds = 30, Pen = 1.0, Wbm = 0.65, Damage = { Head = 114, Torso = 29, Arms = 22, Legs = 18 } },
+    ["MP9"] = { FireRate = 0.08, Rounds = 30, Pen = 1.0, Wbm = 0.65, Damage = { Head = 104, Torso = 26, Arms = 20, Legs = 17 } },
+    ["P90"] = { FireRate = 0.069, Rounds = 50, Pen = 1.0, Wbm = 0.65, Damage = { Head = 103, Torso = 26, Arms = 20, Legs = 16 } },
+    ["Galil AR"] = { FireRate = 0.09, Rounds = 35, Pen = 4.0, Wbm = 0.7, Damage = { Head = 120, Torso = 30, Arms = 23, Legs = 19 } },
+    ["FAMAS"] = { FireRate = 0.09, Rounds = 25, Pen = 4.0, Wbm = 0.7, Damage = { Head = 120, Torso = 30, Arms = 23, Legs = 19 } },
+    ["AK-47"] = { FireRate = 0.1, Rounds = 30, Pen = 4.0, Wbm = 0.8, Damage = { Head = 143, Torso = 36, Arms = 27, Legs = 22 } },
+    ["M4A4"] = { FireRate = 0.09, Rounds = 30, Pen = 4.0, Wbm = 0.75, Damage = { Head = 131, Torso = 33, Arms = 25, Legs = 20 } },
+    ["M4A1-S"] = { FireRate = 0.09, Rounds = 20, Pen = 4.0, Wbm = 0.75, Damage = { Head = 133, Torso = 33, Arms = 25, Legs = 21 } },
+    ["SG 553"] = { FireRate = 0.09, Rounds = 30, Pen = 4.0, Wbm = 0.75, Damage = { Head = 133, Torso = 33, Arms = 25, Legs = 21 } },
+    ["AUG"] = { FireRate = 0.09, Rounds = 30, Pen = 4.0, Wbm = 0.75, Damage = { Head = 101, Torso = 28, Arms = 21, Legs = 17 } },
+    ["SSG 08"] = { FireRate = 1.25, Rounds = 10, Pen = 8.0, Wbm = 0.98, Damage = { Head = 315, Torso = 80, Arms = 61, Legs = 50 } },
+    ["AWP"] = { FireRate = 1.47, Rounds = 5, Pen = 8.0, Wbm = 0.98, Damage = { Head = 459, Torso = 115, Arms = 88, Legs = 72 } },
+    ["MAG-7"] = { FireRate = 0.84, Rounds = 8, Pen = 1.0, Wbm = 0.55, Damage = { Head = 122, Torso = 86, Arms = 30, Legs = 25 } },
+    ["Nova"] = { FireRate = 0.88, Rounds = 8, Pen = 0.8, Wbm = 0.5, Damage = { Head = 106, Torso = 74, Arms = 26, Legs = 22 } },
+    ["Sawed-Off"] = { FireRate = 0.84, Rounds = 7, Pen = 1.0, Wbm = 0.5, Damage = { Head = 125, Torso = 88, Arms = 31, Legs = 25 } },
+    ["XM1014"] = { FireRate = 0.7, Rounds = 7, Pen = 1.0, Wbm = 0.5, Damage = { Head = 82, Torso = 57, Arms = 20, Legs = 17 } },
+    ["Negev"] = { FireRate = 0.066, Rounds = 150, Pen = 4.0, Wbm = 0.7, Damage = { Head = 115, Torso = 29, Arms = 22, Legs = 18 } },
+    ["Zeus x27"] = { FireRate = 0.5, Rounds = 1, Pen = 1.0, Wbm = 0, Damage = { Head = 500, Torso = 500, Arms = 500, Legs = 500 } },
+    ["Knife"] = { FireRate = 0.4, Rounds = 1, Pen = 0, Wbm = 0, Damage = { Head = 48, Torso = 48, Arms = 48, Legs = 48 } },
+}
+
+local MATERIAL_DEPTH = {
+    [Enum.Material.Plastic] = 10, [Enum.Material.SmoothPlastic] = 10,
+    [Enum.Material.Wood] = 10, [Enum.Material.WoodPlanks] = 10,
+    [Enum.Material.Cardboard] = 10, [Enum.Material.Glass] = 25,
+    [Enum.Material.Fabric] = 25,
+    [Enum.Material.Ice] = 15, [Enum.Material.Snow] = 10,
+    [Enum.Material.Sand] = 10, [Enum.Material.Slate] = 30,
+    [Enum.Material.Concrete] = 35, [Enum.Material.Brick] = 30,
+    [Enum.Material.Cobblestone] = 30, [Enum.Material.Pavement] = 30,
+    [Enum.Material.Limestone] = 30, [Enum.Material.Rock] = 35,
+    [Enum.Material.Basalt] = 40, [Enum.Material.Granite] = 40,
+    [Enum.Material.Marble] = 40, [Enum.Material.Sandstone] = 25,
+    [Enum.Material.Metal] = 45,
+    [Enum.Material.Asphalt] = 30,
+}
+
+local function getMaterialDepth(material) return MATERIAL_DEPTH[material] or 0 end
+local function getPenMaterial(inst)
+    local p = inst.Parent
+    if p and p:HasTag("BreakableDoor") then return Enum.Material.Metal end
+    return inst.Material
+end
+
+local function shouldFilterPart(instance)
+    if instance:FindFirstAncestorWhichIsA("Accessory") then return true end
+    if instance.Name == "CollisionCapsule" then return true end
+    local debris = workspace:FindFirstChild("Debris")
+    if debris and instance:IsDescendantOf(debris) then return true end
+    local cam = workspace.CurrentCamera
+    if cam and instance:IsDescendantOf(cam) then return true end
+    local map = workspace:FindFirstChild("Map")
+    if map then
+        local cameras = map:FindFirstChild("Cameras")
+        if cameras and instance:IsDescendantOf(cameras) then return true end
+        local barriers = map:FindFirstChild("Barriers")
+        if barriers and instance:IsDescendantOf(barriers) then return true end
+        local ambience = map:FindFirstChild("Ambience")
+        if ambience and instance:IsDescendantOf(ambience) then return true end
+        local zones = map:FindFirstChild("Zones")
+        if zones then
+            local spawns = zones:FindFirstChild("Spawns")
+            if spawns and instance:IsDescendantOf(spawns) then return true end
+            local sites = zones:FindFirstChild("Sites")
+            if sites and instance:IsDescendantOf(sites) then return true end
+        end
+    end
+    return false
+end
+
+local function getBaseFilter()
+    local filter = {}
+    local lc = LocalPlayer.Character
+    if lc then table.insert(filter, lc) end
+    return filter
+end
+
+-- Р’РЅСѓС‚СЂРµРЅРЅРёРµ РїРµСЂРµРјРµРЅРЅС‹Рµ
+local connection = nil
+local espConnection = nil
+local bhopConnection = nil
+local lightingConnection = nil
+local shotSeq = 0
+local highlights = {}
+local healthGuis = {}
+local wallbangParts = {}
+local nextShotAllowed = 0
+local cachedFireRate = 0.1
+local currentAmmo = 0
+local magazineSize = 0
+local lastWeaponId = nil
+local ammoGui = nil
+local debugTimer = 0
+local shotCount = 0
+local isReloading = false
+
+local function log(msg)
+    pcall(function()
+        StarterGui:SetCore("ChatMakeSystemMessage", {
+            Text = "[Auto] " .. msg,
+            Color = Color3.fromRGB(0, 255, 150),
+            Font = Enum.Font.Code,
+            TextSize = 14,
+        })
+    end)
+    print("[AutoShoot] " .. msg)
+end
+
+local function createAmmoGui()
+    if ammoGui then pcall(function() ammoGui:Destroy() end) end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "AutoAmmoGui"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 120, 0, 40)
+    frame.Position = UDim2.new(0.5, -60, 1, -80)
+    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    frame.BackgroundTransparency = 0.3
+    frame.BorderSizePixel = 0
+    frame.Parent = sg
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = frame
+
+    local label = Instance.new("TextLabel")
+    label.Name = "AmmoText"
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextScaled = true
+    label.Font = Enum.Font.Code
+    label.Text = "--- / ---"
+    label.Parent = frame
+
+    ammoGui = sg
+    return label
+end
+
+local function getAmmoLabel()
+    if ammoGui and ammoGui.Parent then
+        local frame = ammoGui:FindFirstChild("AmmoText", true)
+        if frame then return frame end
+    end
+    return createAmmoGui()
+end
+
+local function getWeaponIdentifier()
+    local attr = LocalPlayer:GetAttribute("CurrentEquipped")
+    if not attr then return nil, nil end
+    local ok, data = pcall(function() return HttpService:JSONDecode(attr) end)
+    if not ok or not data or not data.Identifier then return nil, nil end
+    local identifier = data.Identifier
+    local weaponName = data.Name
+    if not weaponName then
+        local underscore = string.find(identifier, "_")
+        if underscore then weaponName = string.sub(identifier, 1, underscore - 1) else weaponName = identifier end
+    end
+    return identifier, weaponName
+end
+
+local function getWeaponFireRate()
+    local id, weaponName = getWeaponIdentifier()
+    if not weaponName then return cachedFireRate end
+    local stats = WeaponDB[weaponName]
+    if stats then cachedFireRate = stats.FireRate; return stats.FireRate end
+    return cachedFireRate
+end
+
+local function getWeaponDamage()
+    local _, weaponName = getWeaponIdentifier()
+    if not weaponName then return nil end
+    local stats = WeaponDB[weaponName]
+    if stats then return stats.Damage end
+    return nil
+end
+
+local function getWeaponPen()
+    local _, weaponName = getWeaponIdentifier()
+    if not weaponName then return 0 end
+    local stats = WeaponDB[weaponName]
+    local basePen = stats and stats.Pen or 0
+    if Toggles.PenPowerEnabled and Toggles.PenPowerEnabled.Value then
+        return Options.PenPowerSlider.Value
+    end
+    return basePen
+end
+
+local function syncAmmo()
+    local currentId, weaponName = getWeaponIdentifier()
+    if not weaponName then return end
+    if currentId ~= lastWeaponId then
+        lastWeaponId = currentId
+        local stats = WeaponDB[weaponName]
+        if stats then magazineSize = stats.Rounds; currentAmmo = magazineSize
+        else magazineSize = 30; currentAmmo = 30 end
+    end
+end
+
+local function updateAmmoDisplay()
+    local label = getAmmoLabel()
+    if not label then return end
+    syncAmmo()
+    if currentAmmo <= 0 then label.TextColor3 = Color3.fromRGB(255, 60, 60)
+    elseif currentAmmo <= magazineSize * 0.25 then label.TextColor3 = Color3.fromRGB(255, 200, 50)
+    else label.TextColor3 = Color3.fromRGB(255, 255, 255) end
+    label.Text = tostring(currentAmmo) .. " / " .. tostring(magazineSize)
+end
+
+local function deductAmmo(count)
+    currentAmmo = currentAmmo - (count or 1)
+    if currentAmmo < 0 then currentAmmo = 0 end
+    updateAmmoDisplay()
+end
+
+local function getLocalTeam() return LocalPlayer:GetAttribute("Team") end
+
+local function isEnemy(player)
+    if player == LocalPlayer then return false end
+    local theirTeam = player:GetAttribute("Team")
+    if not theirTeam or theirTeam == "Spectators" then return false end
+    if Toggles.TeamCheck.Value and theirTeam == getLocalTeam() then return false end
+    return true
+end
+
+local function isAlive(character)
+    if not character then return false end
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health > 0
+end
+
+-- Р¤РЈРќРљР¦РР ESP
+local function clearHighlights()
+    for player, hl in pairs(highlights) do pcall(function() hl:Destroy() end) end
+    highlights = {}
+end
+
+local function ensureHighlight(character, player)
+    local existing = highlights[player]
+    if existing and existing.Parent == character then return end
+    if existing then pcall(function() existing:Destroy() end) end
+
+    local hl = Instance.new("Highlight")
+    hl.Name = "AutoESP"
+    hl.FillColor = Options.ESPFillColor.Value
+    hl.FillTransparency = Options.ESPFillTransparency.Value
+    hl.OutlineColor = Options.ESPOutlineColor.Value
+    hl.OutlineTransparency = Options.ESPOutlineTransparency.Value
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = character
+    highlights[player] = hl
+end
+
+local function removeHighlight(player)
+    local hl = highlights[player]
+    if hl then pcall(function() hl:Destroy() end); highlights[player] = nil end
+end
+
+local function clearHealthGuis()
+    for player, bg in pairs(healthGuis) do pcall(function() bg:Destroy() end) end
+    healthGuis = {}
+end
+
+local function removeHealthGui(player)
+    local bg = healthGuis[player]
+    if bg then pcall(function() bg:Destroy() end); healthGuis[player] = nil end
+end
+
+local function ensureHealthGui(character, player)
+    local existing = healthGuis[player]
+    if existing and existing.Parent == character then return existing end
+    if existing then pcall(function() existing:Destroy() end) end
+
+    local hrp = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Head")
+    if not hrp then return nil end
+
+    local bg = Instance.new("BillboardGui")
+    bg.Name = "HealthESP"
+    bg.Adornee = hrp
+    bg.Size = UDim2.new(4, 0, 2.5, 0)
+    bg.StudsOffset = Vector3.new(0, 2.5, 0)
+    bg.AlwaysOnTop = true
+    bg.LightInfluence = 0
+    bg.Parent = character
+
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Name = "HealthText"
+    textLabel.Size = UDim2.new(1, 0, 0.4, 0)
+    textLabel.Position = UDim2.new(0, 0, 0, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textLabel.TextStrokeTransparency = 0.5
+    textLabel.Font = Enum.Font.Code
+    textLabel.TextScaled = true
+    textLabel.Text = "100"
+    textLabel.Parent = bg
+
+    local barBg = Instance.new("Frame")
+    barBg.Name = "BarBg"
+    barBg.Size = UDim2.new(0.9, 0, 0.15, 0)
+    barBg.Position = UDim2.new(0.05, 0, 0.5, 0)
+    barBg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    barBg.BackgroundTransparency = 0.5
+    barBg.BorderSizePixel = 0
+    barBg.Parent = bg
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = barBg
+
+    local barFill = Instance.new("Frame")
+    barFill.Name = "BarFill"
+    barFill.Size = UDim2.new(1, 0, 1, 0)
+    barFill.Position = UDim2.new(0, 0, 0, 0)
+    barFill.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    barFill.BorderSizePixel = 0
+    barFill.Parent = barBg
+
+    local corner2 = Instance.new("UICorner")
+    corner2.CornerRadius = UDim.new(1, 0)
+    corner2.Parent = barFill
+
+    healthGuis[player] = bg
+    return bg
+end
+
+-- Р¤РЈРќРљР¦РР WALLBANG X-RAY
+local function resetWallbangParts()
+    for part, origTrans in pairs(wallbangParts) do
+        pcall(function() part.LocalTransparencyModifier = origTrans end)
+    end
+    wallbangParts = {}
+end
+
+local function updateWallbangESP()
+    if not Toggles.WallbangESP or not Toggles.WallbangESP.Value then
+        resetWallbangParts()
+        return
+    end
+
+    local penValue = getWeaponPen()
+    if penValue <= 0 then
+        resetWallbangParts()
+        return
+    end
+
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    local camPos = camera.CFrame.Position
+    local currentWalls = {}
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if isEnemy(player) and isAlive(player.Character) then
+            local char = player.Character
+            local targetPart = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+            if targetPart then
+                local direction = targetPart.Position - camPos
+
+                local params = RaycastParams.new()
+                params.FilterType = Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances = { LocalPlayer.Character }
+
+                local result = Workspace:Raycast(camPos, direction, params)
+                if result and result.Instance then
+                    local hitModel = result.Instance:FindFirstAncestorOfClass("Model")
+                    local hitPlayer = hitModel and Players:GetPlayerFromCharacter(hitModel)
+                    
+                    if hitPlayer ~= player then
+                        local mat = getPenMaterial(result.Instance)
+                        local matDepth = getMaterialDepth(mat)
+                        if matDepth > 0 then
+                            currentWalls[result.Instance] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for part, origTrans in pairs(wallbangParts) do
+        if not currentWalls[part] then
+            pcall(function() part.LocalTransparencyModifier = origTrans end)
+            wallbangParts[part] = nil
+        end
+    end
+
+    local targetTransparency = Options.WallbangTransparency.Value
+    for part, _ in pairs(currentWalls) do
+        if not wallbangParts[part] then
+            if part:IsA("BasePart") or part:IsA("MeshPart") then
+                wallbangParts[part] = part.LocalTransparencyModifier
+            end
+        end
+        
+        if wallbangParts[part] then
+            pcall(function() part.LocalTransparencyModifier = targetTransparency end)
+        end
+    end
+end
+
+-- РћР‘РќРћР’Р›Р•РќРР• ESP
+local function updateESP()
+    local seen = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then removeHighlight(player); removeHealthGui(player); continue end
+        local theirTeam = player:GetAttribute("Team")
+        if not theirTeam or theirTeam == "Spectators" then removeHighlight(player); removeHealthGui(player); continue end
+        if Toggles.TeamCheck.Value and theirTeam == getLocalTeam() then removeHighlight(player); removeHealthGui(player); continue end
+        
+        local char = player.Character
+        if not char then removeHighlight(player); removeHealthGui(player); continue end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then removeHighlight(player); removeHealthGui(player); continue end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then removeHighlight(player); removeHealthGui(player); continue end
+        if not char:IsDescendantOf(Workspace) then removeHighlight(player); removeHealthGui(player); continue end
+
+        seen[player] = true
+
+        if Toggles.ESPEnabled.Value then
+            ensureHighlight(char, player)
+        else
+            removeHighlight(player)
+        end
+
+        local showHealth = Toggles.HealthESP.Value or Toggles.HealthBar.Value
+        if showHealth then
+            local bg = ensureHealthGui(char, player)
+            if bg then
+                local healthPct = hum.Health / math.max(hum.MaxHealth, 1)
+                
+                local textLabel = bg:FindFirstChild("HealthText")
+                if textLabel then
+                    textLabel.Visible = Toggles.HealthESP.Value
+                    if Toggles.HealthESP.Value then
+                        textLabel.Text = tostring(math.floor(hum.Health))
+                    end
+                end
+                
+                local barBg = bg:FindFirstChild("BarBg")
+                local barFill = barBg and barBg:FindFirstChild("BarFill")
+                if barFill then
+                    barBg.Visible = Toggles.HealthBar.Value
+                    if Toggles.HealthBar.Value then
+                        barFill.Size = UDim2.new(healthPct, 0, 1, 0)
+                        if healthPct > 0.5 then
+                            barFill.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+                        elseif healthPct > 0.25 then
+                            barFill.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+                        else
+                            barFill.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+                        end
+                    end
+                end
+            end
+        else
+            removeHealthGui(player)
+        end
+    end
+    
+    for player, hl in pairs(highlights) do
+        if not seen[player] then pcall(function() hl:Destroy() end); highlights[player] = nil end
+    end
+    for player, bg in pairs(healthGuis) do
+        if not seen[player] then pcall(function() bg:Destroy() end); healthGuis[player] = nil end
+    end
+
+    updateWallbangESP()
+end
+
+local function getShootRemote()
+    local netFolder = ReplicatedStorage:FindFirstChild("NetworkRemotes") or ReplicatedStorage:WaitForChild("NetworkRemotes", 5)
+    if not netFolder then return nil end
+    local invFolder = netFolder:FindFirstChild("Inventory") or netFolder:WaitForChild("Inventory", 5)
+    if not invFolder then return nil end
+    return invFolder:FindFirstChild("ShootWeapon") or invFolder:WaitForChild("ShootWeapon", 5)
+end
+
+local HITBOX_ORDER = {
+    "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso", "Torso",
+    "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm", "LeftHand", "RightHand",
+    "LeftArm", "RightArm",
+    "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot",
+    "LeftLeg", "RightLeg"
+}
+
+local function isTargetVisible(origin, targetPart)
+    if not Toggles.WallCheck.Value then return true end
+    local direction = targetPart.Position - origin
+    local distance = direction.Magnitude
+    if distance > Options.MaxDistance.Value then return false end
+
+    local penValue = getWeaponPen()
+    local targetModel = targetPart:FindFirstAncestorOfClass("Model")
+    local filter = getBaseFilter()
+    local curOrigin = origin
+    local remaining = distance
+
+    for _ = 1, 8 do
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.CollisionGroup = "Bullet"
+        params.FilterDescendantsInstances = filter
+        local result = nil
+        local rayDir = direction.Unit * remaining
+        for _ = 1, 20 do
+            local r = Workspace:Raycast(curOrigin, rayDir, params)
+            if not r then result = nil; break end
+            if not shouldFilterPart(r.Instance) then result = r; break end
+            table.insert(filter, r.Instance)
+            params.FilterDescendantsInstances = filter
+        end
+        if not result then return true end
+        local hitDist = (result.Position - curOrigin).Magnitude
+        remaining = remaining - hitDist
+        if targetModel and result.Instance:IsDescendantOf(targetModel) then return true end
+        if not Toggles.Wallbang.Value or penValue <= 0 then return false end
+        local mat = getPenMaterial(result.Instance)
+        local matDepth = getMaterialDepth(mat)
+        if matDepth == 0 and hitDist > penValue then return false end
+        table.insert(filter, result.Instance)
+        curOrigin = result.Position + direction.Unit * 0.1
+    end
+    return false
+end
+
+local function findVisibleHitbox(origin, character)
+    local selectedHitboxes = Options.TargetHitboxes.Value
+    if not selectedHitboxes then return nil end
+    
+    for _, partName in ipairs(HITBOX_ORDER) do
+        if selectedHitboxes[partName] then
+            local part = character:FindFirstChild(partName)
+            if part and isTargetVisible(origin, part) then
+                return part
+            end
+        end
+    end
+    return nil
+end
+
+local function findBestTarget()
+    local camera = Workspace.CurrentCamera
+    if not camera then return nil, nil end
+    local camPos = camera.CFrame.Position
+    local bestDist = Options.MaxDistance.Value
+    local bestPlayer, bestPart = nil, nil
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if not isEnemy(player) then continue end
+        local char = player.Character
+        if not isAlive(char) then continue end
+        
+        local aimPart = findVisibleHitbox(camPos, char)
+        if aimPart then
+            local dist = (camPos - aimPart.Position).Magnitude
+            if dist < bestDist then
+                bestDist = dist
+                bestPlayer = player
+                bestPart = aimPart
+            end
+        end
+    end
+    return bestPlayer, bestPart
+end
+
+local function aimCameraAt(targetPart)
+    local camera = Workspace.CurrentCamera
+    if not camera or not targetPart then return end
+    local camPos = camera.CFrame.Position
+    camera.CFrame = CFrame.new(camPos, targetPart.Position)
+end
+
+local function isEnemyPart(instance)
+    if not instance then return false end
+    local model = instance:FindFirstAncestorOfClass("Model")
+    if not model then return false end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    local player = Players:GetPlayerFromCharacter(model)
+    if not player then return false end
+    return isEnemy(player), player
+end
+
+local function doRaycast(origin, direction, maxDist)
+    local penValue = getWeaponPen()
+    local filter = getBaseFilter()
+    local hits = {}
+    local curOrigin = origin
+    local remaining = maxDist
+    local lastHitInst, lastHitPos = nil, nil
+
+    for i = 1, 8 do
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.CollisionGroup = "Bullet"
+        params.FilterDescendantsInstances = filter
+        local result = nil
+        local rayDir = direction.Unit * remaining
+        for _ = 1, 20 do
+            local r = Workspace:Raycast(curOrigin, rayDir, params)
+            if not r then result = nil; break end
+            if not shouldFilterPart(r.Instance) then result = r; break end
+            table.insert(filter, r.Instance)
+            params.FilterDescendantsInstances = filter
+        end
+        
+        if not result then
+            break
+        end
+        
+        local hitDist = (result.Position - curOrigin).Magnitude
+        remaining = remaining - hitDist
+        local mat = getPenMaterial(result.Instance)
+        
+        local isEnemy, _ = isEnemyPart(result.Instance)
+        local isLastHit = false
+        
+        if isEnemy then 
+            isLastHit = true 
+        end
+        if not Toggles.Wallbang.Value or penValue <= 0 then 
+            isLastHit = true 
+        end
+        local matDepth = getMaterialDepth(mat)
+        if matDepth == 0 and hitDist > penValue then 
+            isLastHit = true 
+        end
+
+        table.insert(hits, { 
+            Instance = result.Instance, 
+            Position = result.Position, 
+            Normal = result.Normal, 
+            Material = mat.Name, 
+            Distance = (result.Position - origin).Magnitude, 
+            Exit = not isLastHit 
+        })
+        
+        lastHitInst = result.Instance
+        lastHitPos = result.Position
+        
+        if isLastHit then break end
+        
+        table.insert(filter, result.Instance)
+        curOrigin = result.Position + direction.Unit * 0.1
+    end
+    
+    if #hits == 0 then
+        table.insert(hits, { 
+            Instance = Workspace.Terrain, 
+            Position = curOrigin + direction.Unit * remaining, 
+            Normal = Vector3.new(0, 1, 0), 
+            Material = "Grass", 
+            Distance = maxDist, 
+            Exit = false 
+        })
+    end
+    
+    return hits, lastHitInst, lastHitPos
+end
+
+-- РљР РђРЎРР’РђРЇ Р¤РЈРќРљР¦РРЇ Р›РЈР§Р•Р™ (TRACERS)
+local function drawTracer(from, to)
+    local a0 = Instance.new("Attachment")
+    a0.WorldPosition = from
+    a0.Parent = Workspace.Terrain
+    
+    local a1 = Instance.new("Attachment")
+    a1.WorldPosition = to
+    a1.Parent = Workspace.Terrain
+    
+    local beam = Instance.new("Beam")
+    beam.Attachment0 = a0
+    beam.Attachment1 = a1
+    
+    local color = Options.TracerColor.Value
+    local thickness = Options.TracerThickness.Value
+    local startTrans = Options.TracerTransparency.Value
+    
+    beam.Color = ColorSequence.new(color)
+    beam.Width0 = thickness
+    beam.Width1 = thickness * 0.2 
+    
+    beam.LightEmission = 1
+    beam.LightInfluence = 0
+    beam.FaceCamera = true
+    beam.Parent = Workspace.Terrain
+    
+    local duration = Options.TracerLifetime.Value
+    local startTime = tick()
+    
+    task.spawn(function()
+        while tick() - startTime < duration do
+            local t = (tick() - startTime) / duration
+            local currentTrans = startTrans + (1 - startTrans) * t
+            beam.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, currentTrans),
+                NumberSequenceKeypoint.new(1, currentTrans)
+            })
+            task.wait()
+        end
+        
+        beam:Destroy()
+        a0:Destroy()
+        a1:Destroy()
+    end)
+end
+
+local function classifyHitPart(hitInstance)
+    if not hitInstance then return "Torso" end
+    local name = hitInstance.Name
+    if name == "Head" then return "Head" end
+    if name == "UpperTorso" or name == "LowerTorso" or name == "Torso" or name == "HumanoidRootPart" then return "Torso" end
+    local armNames = { "LeftArm", "RightArm", "LeftHand", "RightHand", "LeftLowerArm", "RightLowerArm", "LeftUpperArm", "RightUpperArm" }
+    for _, n in ipairs(armNames) do if name == n then return "Arms" end end
+    local legNames = { "LeftLeg", "RightLeg", "LeftFoot", "RightFoot", "LeftLowerLeg", "RightLowerLeg", "LeftUpperLeg", "RightUpperLeg" }
+    for _, n in ipairs(legNames) do if name == n then return "Legs" end end
+    return "Torso"
+end
+
+local function calcDamage(hitInstance, throughWall)
+    local dmgTable = getWeaponDamage()
+    if not dmgTable then return 100 end
+    local _, weaponName = getWeaponIdentifier()
+    local stats = weaponName and WeaponDB[weaponName]
+    local wbm = stats and stats.Wbm or 1
+    local part = classifyHitPart(hitInstance)
+    local baseDmg = dmgTable[part] or dmgTable["Torso"] or 50
+    if throughWall and wbm > 0 and wbm < 1 then baseDmg = math.floor(baseDmg * wbm) end
+    return baseDmg
+end
+
+local function showHitNumber(position, damage, isHeadshot)
+    pcall(function()
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(0.1, 0.1, 0.1); part.Transparency = 1; part.Anchored = true; part.CanCollide = false
+        part.Position = position + Vector3.new(math.random() * 0.6 - 0.3, math.random() * 0.4, math.random() * 0.6 - 0.3)
+        part.Parent = Workspace
+        local bg = Instance.new("BillboardGui")
+        bg.Size = UDim2.new(0, 80, 0, 30); bg.AlwaysOnTop = true; bg.Parent = part
+        local text = Instance.new("TextLabel")
+        text.Size = UDim2.new(1, 0, 1, 0); text.BackgroundTransparency = 1; text.Font = Enum.Font.Code; text.TextScaled = true
+        text.TextStrokeTransparency = 0.5; text.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        text.TextColor3 = isHeadshot and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(255, 255, 100)
+        text.Text = tostring(damage); text.Parent = bg
+        task.spawn(function()
+            local startTime = tick()
+            while tick() - startTime < 0.8 do
+                local t = (tick() - startTime) / 0.8
+                bg.StudsOffset = Vector3.new(0, t * 3, 0)
+                text.TextTransparency = t
+                text.TextStrokeTransparency = 0.5 + t * 0.5
+                task.wait()
+            end
+            part:Destroy()
+        end)
+    end)
+end
+
+local function shootPacket(targetPart, targetPlayer)
+    local remote = getShootRemote()
+    if not remote then return false end
+    
+    local identifier, weaponName = getWeaponIdentifier()
+    if not identifier then return false end
+    
+    local camera = Workspace.CurrentCamera
+    if not camera then return false end
+    local camPos = camera.CFrame.Position
+    
+    local char = LocalPlayer.Character
+    if not char or char:GetAttribute("Dead") then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    
+    if GameState.GetState() == "Buy Period" then return false end
+    
+    if targetPlayer then
+        local tChar = targetPlayer.Character
+        if not tChar then return false end
+        local tHum = tChar:FindFirstChildOfClass("Humanoid")
+        if not tHum or tHum.Health <= 0 then return false end
+        if not tChar:IsDescendantOf(Workspace) then return false end
+    end
+
+    local direction = (targetPart.Position - camPos).Unit
+    local hits, hitInst, hitPos = doRaycast(camPos, direction, Options.MaxDistance.Value)
+
+    local isSniper = (weaponName == "SSG 08" or weaponName == "AWP")
+    local isScoped = camera.FieldOfView < 70
+    local scopeFlag = isSniper and isScoped
+
+    shotSeq = shotSeq + 1
+    
+    remote:FireServer({
+        IsSniperScoped = scopeFlag,
+        ShootingHand = "Right",
+        Identifier = identifier,
+        Seq = shotSeq,
+        Bullets = {
+            {
+                Direction = direction,
+                Origin = camPos,
+                Hits = hits
+            }
+        }
+    })
+
+    if Toggles.TracersEnabled and Toggles.TracersEnabled.Value then
+        local bHitPos = hitPos or (camPos + direction * Options.MaxDistance.Value)
+        pcall(function() drawTracer(camPos, bHitPos) end)
+    end
+    
+    deductAmmo(1)
+    
+    if hitPos then
+        local throughWall = #hits > 1
+        local damage = calcDamage(hitInst, throughWall)
+        if Toggles.ShowHitMarkers and Toggles.ShowHitMarkers.Value then
+            pcall(function() showHitNumber(hitPos, damage, classifyHitPart(hitInst) == "Head") end)
+        end
+        
+        local tChar = targetPlayer.Character
+        local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+        local isKill = false
+        if tHum and tHum.Health > 0 then
+            if tHum.Health - damage <= 0 then
+                isKill = true
+            end
+        end
+
+        if isKill then
+            if Toggles.KillSound and Toggles.KillSound.Value then
+                pcall(function() playSound(Options.KillSoundDropdown.Value, Options.KillSoundVolume.Value, Options.KillSoundPitch.Value) end)
+            end
+        else
+            if Toggles.HitSound and Toggles.HitSound.Value then
+                pcall(function() playSound(Options.HitSoundDropdown.Value, Options.HitSoundVolume.Value, Options.HitSoundPitch.Value) end)
+            end
+        end
+    end
+
+    return true
+end
+
+local function doReload()
+    if isReloading then return false end
+    local id, weaponName = getWeaponIdentifier()
+    if not id then return false end
+    local stats = weaponName and WeaponDB[weaponName]
+    local magSize = stats and stats.Rounds or magazineSize
+    
+    isReloading = true
+    
+    if Toggles.NoReload and Toggles.NoReload.Value then
+        currentAmmo = magSize
+        updateAmmoDisplay()
+        task.delay(0.05, function()
+            isReloading = false
+        end)
+    else
+        pcall(function()
+            RemotesModule.Inventory.ReloadWeapon.Send({
+                Identifier = id,
+                Rounds = currentAmmo,
+                Capacity = 999
+            })
+        end)
+        
+        task.delay(Options.ReloadTime.Value, function()
+            currentAmmo = magSize
+            updateAmmoDisplay()
+            isReloading = false
+        end)
+    end
+    
+    return true
+end
+
+local function tick_autoshoot()
+    if not Toggles.AimbotEnabled.Value then return end
+    local now = tick()
+    if now < nextShotAllowed then return end
+    if isReloading then return end
+    
+    local fireRate = getWeaponFireRate()
+    if currentAmmo <= 0 then
+        pcall(doReload)
+        nextShotAllowed = now + Options.ReloadTime.Value 
+        return
+    end
+    
+    local targetPlayer, targetPart = findBestTarget()
+    if not targetPlayer or not targetPart then return end
+    
+    aimCameraAt(targetPart)
+    
+    local _, weaponName = getWeaponIdentifier()
+    local isSniper = (weaponName == "SSG 08" or weaponName == "AWP")
+    
+    if Toggles.NoFireDelay.Value and not isSniper then
+        local stats = WeaponDB[weaponName]
+        if stats then
+            local tChar = targetPlayer.Character
+            local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+            if tHum and tHum.Health > 0 then
+                local initialHealth = tHum.Health
+                local camera = Workspace.CurrentCamera
+                local camPos = camera.CFrame.Position
+                
+                task.spawn(function()
+                    local shotsFired = 0
+                    local maxShots = currentAmmo
+                    
+                    while shotsFired < maxShots do
+                        if not Toggles.AimbotEnabled.Value then break end
+                        if currentAmmo <= 0 or isReloading then break end
+                        
+                        local cChar = targetPlayer.Character
+                        if not cChar then break end
+                        local cHum = cChar:FindFirstChildOfClass("Humanoid")
+                        if not cHum or cHum.Health <= 0 then break end
+                        
+                        local cPart = findVisibleHitbox(camPos, cChar)
+                        if not cPart then break end
+                        
+                        local partName = classifyHitPart(cPart)
+                        local baseDmg = stats.Damage[partName] or stats.Damage["Torso"] or 50
+                        
+                        local direction = (cPart.Position - camPos).Unit
+                        local hits, _, _ = doRaycast(camPos, direction, Options.MaxDistance.Value)
+                        local throughWall = hits and #hits > 1
+                        if throughWall and stats.Wbm > 0 and stats.Wbm < 1 then
+                            baseDmg = math.floor(baseDmg * stats.Wbm)
+                        end
+                        
+                        local remainingHealth = initialHealth - (shotsFired * baseDmg)
+                        if remainingHealth <= 0 then break end
+                        
+                        local shotsNeeded = math.ceil(remainingHealth / baseDmg)
+                        if shotsFired >= shotsNeeded then break end
+                        
+                        aimCameraAt(cPart)
+                        local ok = shootPacket(cPart, targetPlayer)
+                        if ok then
+                            shotCount = shotCount + 1
+                            shotsFired = shotsFired + 1
+                            task.wait(0.1)
+                        else
+                            break 
+                        end
+                    end
+                end)
+                
+                nextShotAllowed = tick() + 0.1
+                return
+            end
+        end
+    end
+    
+    local ok = shootPacket(targetPart, targetPlayer)
+    if ok then
+        nextShotAllowed = now + fireRate
+        shotCount = shotCount + 1
+    end
+end
+
+local BHOP_MAX_SPEED = 28
+local BHOP_BOOST = 0.4
+
+local function tick_noflash()
+    if not Toggles.NoFlash.Value then return end
+    pcall(function()
+        local gui = LocalPlayer.PlayerGui:FindFirstChild("FlashbangEffect")
+        if gui then gui:Destroy() end
+        local ss = LocalPlayer.PlayerGui:FindFirstChild("FlashScreenshot")
+        if ss then ss:Destroy() end
+        local cc = Lighting:FindFirstChild("FlashbangColorCorrection")
+        if cc then cc:Destroy() end
+    end)
+end
+
+local function tick_bhop()
+    if not Toggles.BHopEnabled.Value then return end
+    if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then return end
+
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if char:GetAttribute("Dead") then return end
+    if GameState.GetState() == "Buy Period" then return end
+
+    local onGround = hum.FloorMaterial ~= Enum.Material.Air
+
+    if onGround then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    else
+        local vel = hrp.AssemblyLinearVelocity
+        local hVel = Vector3.new(vel.X, 0, vel.Z)
+        local hSpeed = hVel.Magnitude
+
+        if hSpeed > 0.1 and hSpeed < BHOP_MAX_SPEED then
+            local dir = hVel.Unit
+            local newSpeed = math.min(hSpeed + BHOP_BOOST, BHOP_MAX_SPEED)
+            hrp.AssemblyLinearVelocity = Vector3.new(
+                dir.X * newSpeed,
+                vel.Y,
+                dir.Z * newSpeed
+            )
+        end
+    end
+end
+
+-- === РћР‘РќРћР’Р›Р•РќРР• РћРЎР’Р•Р©Р•РќРРЇ ===
+local function tick_lighting()
+    if Toggles.CustomTime and Toggles.CustomTime.Value then
+        Lighting.ClockTime = Options.TimeOfDay.Value
+    end
+    
+    if Toggles.CustomAmbience and Toggles.CustomAmbience.Value then
+        Lighting.Ambient = Options.AmbienceColor.Value
+        Lighting.OutdoorAmbient = Options.OutdoorAmbienceColor.Value
+        Lighting.Brightness = Options.Brightness.Value
+    end
+    
+    if Toggles.NoShadows and Toggles.NoShadows.Value then
+        Lighting.GlobalShadows = false
+    end
+end
+
+-- === JUMP CIRCLES ===
+local function setupCharacter(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hum then return end
+    
+    hum.StateChanged:Connect(function(old, new)
+        if Toggles.JumpCircles and Toggles.JumpCircles.Value and new == Enum.HumanoidStateType.Jumping then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            
+            local params = RaycastParams.new()
+            params.FilterDescendantsInstances = {char}
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            
+            local result = Workspace:Raycast(hrp.Position, Vector3.new(0, -6, 0), params)
+            local pos = result and result.Position or (hrp.Position - Vector3.new(0, 3, 0))
+            
+            local circle = Instance.new("Part")
+            circle.Shape = Enum.PartType.Cylinder
+            circle.Material = Enum.Material.Neon
+            circle.Color = Options.JumpCircleColor.Value
+            circle.Anchored = true
+            circle.CanCollide = false
+            circle.CastShadow = false
+            -- РџРѕРІРѕСЂР°С‡РёРІР°РµРј С†РёР»РёРЅРґСЂ С‚Р°Рє, С‡С‚РѕР±С‹ РїР»РѕСЃРєР°СЏ СЃС‚РѕСЂРѕРЅР° СЃРјРѕС‚СЂРµР»Р° РІРІРµСЂС…
+            circle.CFrame = CFrame.new(pos) * CFrame.Angles(0, 0, math.rad(90))
+            circle.Size = Vector3.new(0.05, 1, 1)
+            circle.Transparency = 0.2
+            circle.Parent = Workspace
+            
+            local duration = 0.6
+            local startTime = tick()
+            local maxSize = 6
+            
+            task.spawn(function()
+                while tick() - startTime < duration do
+                    local t = (tick() - startTime) / duration
+                    local size = 1 + (t * maxSize)
+                    -- Vector3.new(С‚РѕР»С‰РёРЅР°, РґРёР°РјРµС‚СЂ1, РґРёР°РјРµС‚СЂ2)
+                    circle.Size = Vector3.new(0.05, size, size)
+                    circle.Transparency = 0.2 + (0.8 * t)
+                    task.wait()
+                end
+                circle:Destroy()
+            end)
+        end
+    end)
+end
+
+if LocalPlayer.Character then setupCharacter(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(setupCharacter)
+
+-- === РџРѕСЃС‚СЂРѕРµРЅРёРµ UI ===
+
+-- Aimbot Tab
+local AimbotGroup = Tabs.Aimbot:AddLeftGroupbox('Aimbot Settings')
+AimbotGroup:AddToggle('AimbotEnabled', { Text = 'Enabled', Default = false, Tooltip = 'Р’РєР»СЋС‡РёС‚СЊ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєСѓСЋ СЃС‚СЂРµР»СЊР±Сѓ' })
+AimbotGroup:AddToggle('NoFireDelay', { Text = 'No Fire Delay (Smart)', Default = false, Tooltip = 'Р’С‹РїСѓСЃРєР°РµС‚ СЂРѕРІРЅРѕ СЃС‚РѕР»СЊРєРѕ РїСѓР»СЊ, СЃРєРѕР»СЊРєРѕ РЅСѓР¶РЅРѕ РґР»СЏ СѓР±РёР№СЃС‚РІР° (РќРµ СЂР°Р±РѕС‚Р°РµС‚ РґР»СЏ СЃРЅР°Р№РїРµСЂРѕРє)' })
+AimbotGroup:AddToggle('WallCheck', { Text = 'Wall Check', Default = true, Tooltip = 'РќРµ СЃС‚СЂРµР»СЏС‚СЊ СЃРєРІРѕР·СЊ СЃС‚РµРЅС‹, РµСЃР»Рё РѕСЂСѓР¶РёРµ РЅРµ РїСЂРѕР±РёРІР°РµС‚' })
+AimbotGroup:AddToggle('Wallbang', { Text = 'Wallbang', Default = true, Tooltip = 'РЎС‚СЂРµР»СЏС‚СЊ СЃРєРІРѕР·СЊ РїСЂРѕР±РёРІР°РµРјС‹Рµ РѕР±СЉРµРєС‚С‹' })
+AimbotGroup:AddToggle('PenPowerEnabled', { Text = 'Pen Power Override', Default = false, Tooltip = 'РџРµСЂРµРѕРїСЂРµРґРµР»СЏРµС‚ РїСЂРѕР±РёРІР°РµРјРѕСЃС‚СЊ РѕСЂСѓР¶РёСЏ РЅР° СѓРєР°Р·Р°РЅРЅРѕРµ Р·РЅР°С‡РµРЅРёРµ' })
+AimbotGroup:AddSlider('PenPowerSlider', { Text = 'Pen Power', Default = 10, Min = 0.1, Max = 100, Rounding = 1, Suffix = '', Tooltip = 'Р“Р»РѕР±Р°Р»СЊРЅР°СЏ РїСЂРѕР±РёРІР°РµРјРѕСЃС‚СЊ РґР»СЏ РІСЃРµРіРѕ РѕСЂСѓР¶РёСЏ (РїСЂРё РІРєР»СЋС‡С‘РЅРЅРѕРј Pen Power)' })
+AimbotGroup:AddToggle('TeamCheck', { Text = 'Team Check', Default = true })
+AimbotGroup:AddToggle('Headshot', { Text = 'Aim at Head', Default = true, Tooltip = 'РџСЂРёРѕСЂРёС‚РµС‚ РіРѕР»РѕРІС‹ (РµСЃР»Рё РЅРµ РІРёРґРЅР° - СЃС‚СЂРµР»СЏРµС‚ РїРѕ С‚РµР»Сѓ/РєРѕРЅРµС‡РЅРѕСЃС‚СЏРј)' })
+
+AimbotGroup:AddDropdown('TargetHitboxes', {
+    Text = 'Target Hitboxes',
+    Values = { 
+        'Head', 'HumanoidRootPart', 'UpperTorso', 'LowerTorso', 'Torso',
+        'LeftUpperArm', 'RightUpperArm', 'LeftLowerArm', 'RightLowerArm', 'LeftHand', 'RightHand',
+        'LeftArm', 'RightArm',
+        'LeftUpperLeg', 'RightUpperLeg', 'LeftLowerLeg', 'RightLowerLeg', 'LeftFoot', 'RightFoot',
+        'LeftLeg', 'RightLeg'
+    },
+    Default = { 
+        Head = true, HumanoidRootPart = true, UpperTorso = true, LowerTorso = true, Torso = true,
+        LeftUpperArm = true, RightUpperArm = true, LeftLowerArm = true, RightLowerArm = true, LeftHand = true, RightHand = true,
+        LeftArm = true, RightArm = true,
+        LeftUpperLeg = true, RightUpperLeg = true, LeftLowerLeg = true, RightLowerLeg = true, LeftFoot = true, RightFoot = true,
+        LeftLeg = true, RightLeg = true
+    },
+    Multi = true,
+    Tooltip = 'Р’С‹Р±РµСЂРёС‚Рµ С…РёС‚Р±РѕРєСЃС‹, РІ РєРѕС‚РѕСЂС‹Рµ Р±СѓРґРµС‚ СЃС‚СЂРµР»СЏС‚СЊ Ragebot'
+})
+
+AimbotGroup:AddSlider('MaxDistance', { Text = 'Max Distance', Default = 500, Min = 50, Max = 2000, Rounding = 0, Suffix = ' studs' })
+AimbotGroup:AddSlider('ReloadTime', { Text = 'Reload Time', Default = 2.5, Min = 1.0, Max = 5.0, Rounding = 1, Suffix = 's', Tooltip = 'Р’СЂРµРјСЏ РѕР¶РёРґР°РЅРёСЏ РїРµСЂРµР·Р°СЂСЏРґРєРё СЃРµСЂРІРµСЂРѕРј (РћР‘РЇР—РђРўР•Р›Р¬РќРћ РґР»СЏ СЂРµРіР° СѓСЂРѕРЅР°)' })
+AimbotGroup:AddLabel('Toggle Key'):AddKeyPicker('AimbotToggleKey', { Default = 'P', Mode = 'Toggle', Text = 'Aimbot Toggle', NoUI = false })
+
+-- Visuals Tab
+local VisualsGroup = Tabs.Visuals:AddLeftGroupbox('Player ESP')
+VisualsGroup:AddToggle('ESPEnabled', { Text = 'Highlight Enabled', Default = true })
+VisualsGroup:AddLabel('Fill Color'):AddColorPicker('ESPFillColor', { Default = Color3.fromRGB(255, 0, 0) })
+VisualsGroup:AddSlider('ESPFillTransparency', { Text = 'Fill Transparency', Default = 0.75, Min = 0, Max = 1, Rounding = 2 })
+VisualsGroup:AddLabel('Outline Color'):AddColorPicker('ESPOutlineColor', { Default = Color3.fromRGB(255, 255, 255) })
+VisualsGroup:AddSlider('ESPOutlineTransparency', { Text = 'Outline Transparency', Default = 0, Min = 0, Max = 1, Rounding = 2 })
+
+VisualsGroup:AddToggle('HealthESP', { Text = 'Health Text', Default = true, Tooltip = 'РџРѕРєР°Р·С‹РІР°С‚СЊ Р·РґРѕСЂРѕРІСЊРµ С†РёС„СЂР°РјРё' })
+VisualsGroup:AddToggle('HealthBar', { Text = 'Health Bar', Default = true, Tooltip = 'РџРѕРєР°Р·С‹РІР°С‚СЊ РїРѕР»РѕСЃРєСѓ Р·РґРѕСЂРѕРІСЊСЏ' })
+
+local VisualsGroup2 = Tabs.Visuals:AddRightGroupbox('World & Effects')
+VisualsGroup2:AddToggle('WallbangESP', { Text = 'Wallbang X-Ray', Default = true, Tooltip = 'Р”РµР»Р°РµС‚ РїСЂРѕСЃС‚СЂРµР»РёРІР°РµРјС‹Рµ СЃС‚РµРЅС‹ РїСЂРѕР·СЂР°С‡РЅС‹РјРё' })
+VisualsGroup2:AddSlider('WallbangTransparency', { Text = 'Wall Transparency', Default = 0.8, Min = 0, Max = 0.95, Rounding = 2, Tooltip = 'РќР°СЃРєРѕР»СЊРєРѕ РїСЂРѕР·СЂР°С‡РЅРѕР№ Р±СѓРґРµС‚ СЃС‚РµРЅР° (0.95 - РїРѕС‡С‚Рё РЅРµРІРёРґРёРјР°СЏ)' })
+
+VisualsGroup2:AddToggle('TracersEnabled', { Text = 'Bullet Tracers', Default = true, Tooltip = 'Р РёСЃРѕРІР°С‚СЊ РєСЂР°СЃРёРІС‹Рµ Р»СѓС‡Рё РѕС‚ РІС‹СЃС‚СЂРµР»РѕРІ' })
+VisualsGroup2:AddLabel('Tracer Color'):AddColorPicker('TracerColor', { Default = Color3.fromRGB(255, 50, 50) })
+VisualsGroup2:AddSlider('TracerThickness', { Text = 'Tracer Thickness', Default = 0.15, Min = 0.01, Max = 1, Rounding = 2 })
+VisualsGroup2:AddSlider('TracerTransparency', { Text = 'Tracer Transparency', Default = 0, Min = 0, Max = 1, Rounding = 2 })
+VisualsGroup2:AddSlider('TracerLifetime', { Text = 'Tracer Lifetime', Default = 0.5, Min = 0.1, Max = 3, Rounding = 1, Suffix = 's', Tooltip = 'РљР°Рє РґРѕР»РіРѕ Р»СѓС‡ РёСЃС‡РµР·Р°РµС‚ СЃ СЌРєСЂР°РЅР°' })
+
+VisualsGroup2:AddToggle('JumpCircles', { Text = 'Jump Circles', Default = true, Tooltip = 'Р РёСЃРѕРІР°С‚СЊ РЅРµРѕРЅРѕРІС‹Р№ РєСЂСѓРі РїСЂРё РїСЂС‹Р¶РєРµ' })
+VisualsGroup2:AddLabel('Jump Circle Color'):AddColorPicker('JumpCircleColor', { Default = Color3.fromRGB(0, 255, 150) })
+
+VisualsGroup2:AddToggle('ShowHitMarkers', { Text = 'Show Hit Markers', Default = true, Tooltip = 'Р РёСЃРѕРІР°С‚СЊ С†РёС„СЂС‹ РЅР°РЅРµСЃРµРЅРЅРѕРіРѕ СѓСЂРѕРЅР°' })
+
+-- Р“СЂСѓРїРїР° РґР»СЏ РѕСЃРІРµС‰РµРЅРёСЏ
+local LightingGroup = Tabs.Visuals:AddLeftGroupbox('Lighting & Ambience')
+LightingGroup:AddToggle('CustomTime', { Text = 'Custom Time', Default = false, Tooltip = 'РР·РјРµРЅСЏС‚СЊ РІСЂРµРјСЏ СЃСѓС‚РѕРє' })
+LightingGroup:AddSlider('TimeOfDay', { Text = 'Time of Day', Default = 12, Min = 0, Max = 24, Rounding = 1, Suffix = 'h' })
+
+LightingGroup:AddToggle('CustomAmbience', { Text = 'Custom Ambience', Default = false, Tooltip = 'РР·РјРµРЅСЏС‚СЊ РѕСЃРІРµС‰РµРЅРёРµ РєР°СЂС‚С‹' })
+LightingGroup:AddLabel('Ambient Color'):AddColorPicker('AmbienceColor', { Default = Color3.fromRGB(128, 128, 128) })
+LightingGroup:AddLabel('Outdoor Ambient'):AddColorPicker('OutdoorAmbienceColor', { Default = Color3.fromRGB(128, 128, 128) })
+LightingGroup:AddSlider('Brightness', { Text = 'Brightness', Default = 1, Min = 0, Max = 5, Rounding = 2 })
+
+LightingGroup:AddToggle('NoShadows', { Text = 'No Shadows', Default = false, Tooltip = 'РћС‚РєР»СЋС‡РёС‚СЊ РіР»РѕР±Р°Р»СЊРЅС‹Рµ С‚РµРЅРё' })
+
+-- Sounds Group
+local SoundGroup = Tabs.Visuals:AddLeftGroupbox('Sounds')
+SoundGroup:AddToggle('HitSound', { Text = 'Enable Hitsound', Default = true })
+SoundGroup:AddDropdown('HitSoundDropdown', {
+    Text = 'Hitsound',
+    Values = { 'None', 'Metal', 'TF2 Critical', 'TF2', 'Rust' },
+    Default = 'Metal',
+    Multi = false
+})
+SoundGroup:AddSlider('HitSoundVolume', { Text = 'Hitsound Volume', Default = 0.5, Min = 0, Max = 2, Rounding = 2 })
+SoundGroup:AddSlider('HitSoundPitch', { Text = 'Hitsound Pitch', Default = 1, Min = 0.5, Max = 2, Rounding = 2 })
+
+SoundGroup:AddToggle('KillSound', { Text = 'Enable Killsound', Default = true })
+SoundGroup:AddDropdown('KillSoundDropdown', {
+    Text = 'Killsound',
+    Values = { 'None', 'Metal', 'TF2 Critical', 'TF2', 'Rust' },
+    Default = 'TF2 Critical',
+    Multi = false
+})
+SoundGroup:AddSlider('KillSoundVolume', { Text = 'Killsound Volume', Default = 1, Min = 0, Max = 2, Rounding = 2 })
+SoundGroup:AddSlider('KillSoundPitch', { Text = 'Killsound Pitch', Default = 1, Min = 0.5, Max = 2, Rounding = 2 })
+
+-- Anti-Aim Tab
+local AntiAimGroup = Tabs['Anti-Aim']:AddLeftGroupbox('Anti-Aim')
+AntiAimGroup:AddToggle('AntiAimEnabled', { Text = 'Enable Anti-Aim', Default = false, Tooltip = 'Р’РєР»СЋС‡РёС‚СЊ РїРѕРґРјРµРЅСѓ СѓРіР»РѕРІ РѕР±Р·РѕСЂР°' })
+
+AntiAimGroup:AddDropdown('YawMode', {
+    Text = 'Yaw (Horizontal)',
+    Values = { 'None', 'Backward (180)', 'Left (90)', 'Right (-90)', 'Spin', 'Random' },
+    Default = 'Backward (180)',
+    Multi = false
+})
+AntiAimGroup:AddSlider('SpinSpeed', { Text = 'Spin Speed', Default = 10, Min = 1, Max = 100, Rounding = 0 })
+AntiAimGroup:AddSlider('RandomInterval', { Text = 'Random Interval', Default = 0.5, Min = 0.1, Max = 2.0, Rounding = 1, Suffix = 's' })
+
+AntiAimGroup:AddDropdown('PitchMode', {
+    Text = 'Pitch (Vertical)',
+    Values = { 'None', 'Down (-1)', 'Up (1)', 'Zero (0)', 'Random' },
+    Default = 'Down (-1)',
+    Multi = false
+})
+
+local AntiAimGroup2 = Tabs['Anti-Aim']:AddRightGroupbox('Spectator')
+AntiAimGroup2:AddToggle('AntiSpectator', { Text = 'Enable Anti-Spectator', Default = false, Tooltip = 'РСЃРєР°Р¶Р°РµС‚ РєР°РјРµСЂСѓ РґР»СЏ С‚РµС…, РєС‚Рѕ Р·Р° РІР°РјРё РЅР°Р±Р»СЋРґР°РµС‚' })
+AntiAimGroup2:AddSlider('SpectatorRotation', { Text = 'Rotation Amount', Default = math.pi, Min = 0, Max = math.pi, Rounding = 2 })
+AntiAimGroup2:AddSlider('SpectatorPosition', { Text = 'Position Offset', Default = 1, Min = 0, Max = 10, Rounding = 1, Suffix = ' studs' })
+
+-- Misc Tab
+local MiscGroup = Tabs.Misc:AddLeftGroupbox('Miscellaneous')
+MiscGroup:AddToggle('NoReload', { Text = 'No Reload', Default = true, Tooltip = 'РњРіРЅРѕРІРµРЅРЅР°СЏ РїРµСЂРµР·Р°СЂСЏРґРєР° Р»РѕРєР°Р»СЊРЅРѕ (СЃРµСЂРІРµСЂ РІСЃС‘ СЂР°РІРЅРѕ С‚СЂРµР±СѓРµС‚ Reload Time)' })
+MiscGroup:AddToggle('BHopEnabled', { Text = 'Bunny Hop', Default = true, Tooltip = 'РЈРґРµСЂР¶РёРІР°Р№С‚Рµ Space РґР»СЏ СЂР°СЃРїСЂС‹Р¶РєРё' })
+MiscGroup:AddToggle('NoFlash', { Text = 'No Flashbang', Default = true, Tooltip = 'РЈР±РёСЂР°РµС‚ РѕСЃР»РµРїР»РµРЅРёРµ РѕС‚ РіСЂР°РЅР°С‚' })
+
+-- UI Settings Tab
+local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu')
+MenuGroup:AddButton('Unload', function() 
+    if connection then connection:Disconnect() end
+    if espConnection then espConnection:Disconnect() end
+    if bhopConnection then bhopConnection:Disconnect() end
+    if lightingConnection then lightingConnection:Disconnect() end
+    if ammoGui then ammoGui:Destroy() end
+    clearHighlights()
+    clearHealthGuis()
+    resetWallbangParts()
+    
+    Lighting.TimeOfDay = OrigLighting.TimeOfDay
+    Lighting.Ambient = OrigLighting.Ambient
+    Lighting.OutdoorAmbient = OrigLighting.OutdoorAmbient
+    Lighting.Brightness = OrigLighting.Brightness
+    Lighting.GlobalShadows = OrigLighting.GlobalShadows
+    
+    Library:Unload() 
+end)
+MenuGroup:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', { Default = 'End', NoUI = true, Text = 'Menu keybind' })
+Library.ToggleKeybind = Options.MenuKeybind
+
+Options.AimbotToggleKey:OnClick(function()
+    Toggles.AimbotEnabled:SetValue(not Toggles.AimbotEnabled.Value)
+    if Toggles.AimbotEnabled.Value then log("ON") else log("OFF") end
+end)
+
+-- === РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ ===
+createAmmoGui()
+local remote = getShootRemote()
+log("remote: " .. (remote and "OK" or "MISSING"))
+
+connection = RunService.Heartbeat:Connect(function()
+    pcall(tick_autoshoot)
+    pcall(updateAmmoDisplay)
+    if tick() - debugTimer > 3 then
+        local weaponId = getWeaponIdentifier() or "none"
+        local fr = getWeaponFireRate()
+        local enemies = 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            if isEnemy(p) and isAlive(p.Character) then enemies = enemies + 1 end
+        end
+        log(string.format("shots:%d | fr:%.3f | ammo:%d/%d | id:%s | enemies:%d", shotCount, fr, currentAmmo, magazineSize, tostring(weaponId):sub(1, 20), enemies))
+        debugTimer = tick()
+    end
+end)
+
+espConnection = RunService.Heartbeat:Connect(function() pcall(updateESP) end)
+bhopConnection = RunService.Heartbeat:Connect(function() pcall(tick_bhop); pcall(tick_noflash) end)
+lightingConnection = RunService.Heartbeat:Connect(function() pcall(tick_lighting) end)
+
+Players.PlayerRemoving:Connect(function(player) 
+    removeHighlight(player)
+    removeHealthGui(player)
+end)
+
+-- РњРµРЅРµРґР¶РµСЂС‹ С‚РµРјС‹ Рё РєРѕРЅС„РёРіРѕРІ
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'MenuKeybind', 'AimbotToggleKey' })
+ThemeManager:SetFolder('FrontlinesScript')
+SaveManager:SetFolder('FrontlinesScript/configs')
+SaveManager:BuildConfigSection(Tabs['UI Settings'])
+ThemeManager:ApplyToTab(Tabs['UI Settings'])
+SaveManager:LoadAutoloadConfig()
